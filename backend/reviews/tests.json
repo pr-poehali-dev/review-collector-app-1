@@ -11,7 +11,7 @@
       "name": "POST create review",
       "method": "POST",
       "path": "/",
-      "body": {"author": "Тест Тестов", "text": "Хороший сервис", "rating": 5, "fingerprint": "test-fp-unique-12345"},
+      "body": {"author": "Тест Тестов", "text": "Хороший сервис", "rating": 5, "fingerprint": "test-fp-sync-99887766"},
       "expectedStatus": 201,
       "expectedBody": {"message": "Отзыв отправлен на модерацию"},
       "bodyMatcher": "partial"
@@ -29,6 +29,14 @@
       "path": "/?action=check&fp=nonexistent-fp-xyz",
       "expectedStatus": 200,
       "expectedBody": {"has_review": false},
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "DELETE without fingerprint returns 400",
+      "method": "DELETE",
+      "path": "/?action=delete",
+      "body": {},
+      "expectedStatus": 400,
       "bodyMatcher": "partial"
     }
   ]

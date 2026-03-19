@@ -1,6 +1,6 @@
 """
-Управление отзывами: получение, создание, модерация и ответы компании.
-Роутинг через query-параметр action: admin | moderate | reply | check
+Управление отзывами: получение, создание, редактирование, удаление, модерация и ответы компании.
+Роутинг через query-параметр action: admin | moderate | reply | check | delete
 Один отзыв на пользователя — контроль через fingerprint браузера.
 """
 import json
@@ -11,7 +11,7 @@ SCHEMA = "t_p75464024_review_collector_app"
 
 CORS = {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, X-Admin-Token",
 }
 
@@ -48,11 +48,13 @@ def handler(event: dict, context) -> dict:
         fp = params.get("fp", "").strip()
         if not fp:
             cur.close(); conn.close()
-            return ok({"has_review": False})
-        cur.execute(f"SELECT id FROM {SCHEMA}.reviews WHERE fingerprint = %s LIMIT 1", (fp,))
+            return ok({"has_review": False, "review": None})
+        cur.execute(f"SELECT id, author, rating, text, status FROM {SCHEMA}.reviews WHERE fingerprint = %s LIMIT 1", (fp,))
         row = cur.fetchone()
         cur.close(); conn.close()
-        return ok({"has_review": bool(row)})
+        if row:
+            return ok({"has_review": True, "review": {"id": row[0], "author": row[1], "rating": row[2], "text": row[3], "status": row[4]}})
+        return ok({"has_review": False, "review": None})
 
     # GET ?action=admin — все отзывы для панели модерации
     if method == "GET" and action == "admin":
@@ -121,7 +123,6 @@ def handler(event: dict, context) -> dict:
             cur.close(); conn.close()
             return err("Заполните все поля корректно")
 
-        # Проверка: один отзыв на пользователя
         if fingerprint:
             cur.execute(f"SELECT id FROM {SCHEMA}.reviews WHERE fingerprint = %s LIMIT 1", (fingerprint,))
             if cur.fetchone():
@@ -137,6 +138,30 @@ def handler(event: dict, context) -> dict:
         conn.commit(); cur.close(); conn.close()
         return ok({"id": new_id, "message": "Отзыв отправлен на модерацию"}, 201)
 
+    # PUT ?action=edit — редактировать свой отзыв (по fingerprint)
+    if method == "PUT" and action == "edit":
+        fingerprint = (body.get("fingerprint") or "").strip()
+        review_id = body.get("id")
+        text = (body.get("text") or "").strip()
+        rating = body.get("rating")
+
+        if not fingerprint or not review_id or not text or not rating:
+            cur.close(); conn.close()
+            return err("Неверные параметры")
+        if not (1 <= int(rating) <= 5):
+            cur.close(); conn.close()
+            return err("Оценка должна быть от 1 до 5")
+
+        cur.execute(
+            f"UPDATE {SCHEMA}.reviews SET text = %s, rating = %s, status = 'pending' WHERE id = %s AND fingerprint = %s",
+            (text, int(rating), int(review_id), fingerprint)
+        )
+        if cur.rowcount == 0:
+            conn.rollback(); cur.close(); conn.close()
+            return err("Отзыв не найден или нет прав", 403)
+        conn.commit(); cur.close(); conn.close()
+        return ok({"message": "Отзыв обновлён и отправлен на повторную модерацию"})
+
     # PUT ?action=moderate — одобрить или отклонить
     if method == "PUT" and action == "moderate":
         if not is_admin(headers):
@@ -150,6 +175,38 @@ def handler(event: dict, context) -> dict:
         cur.execute(f"UPDATE {SCHEMA}.reviews SET status = %s WHERE id = %s", (status, int(review_id)))
         conn.commit(); cur.close(); conn.close()
         return ok({"message": "Статус обновлён"})
+
+    # DELETE ?action=delete — пользователь удаляет свой отзыв (по fingerprint)
+    if method == "DELETE" and action == "delete":
+        fingerprint = (body.get("fingerprint") or "").strip()
+        review_id = body.get("id")
+        if not fingerprint or not review_id:
+            cur.close(); conn.close()
+            return err("Неверные параметры")
+        cur.execute(f"DELETE FROM {SCHEMA}.replies WHERE review_id = %s", (int(review_id),))
+        cur.execute(
+            f"DELETE FROM {SCHEMA}.reviews WHERE id = %s AND fingerprint = %s",
+            (int(review_id), fingerprint)
+        )
+        if cur.rowcount == 0:
+            conn.rollback(); cur.close(); conn.close()
+            return err("Отзыв не найден или нет прав", 403)
+        conn.commit(); cur.close(); conn.close()
+        return ok({"message": "Отзыв удалён"})
+
+    # DELETE ?action=admin_delete — администратор удаляет любой отзыв
+    if method == "DELETE" and action == "admin_delete":
+        if not is_admin(headers):
+            cur.close(); conn.close()
+            return err("Нет доступа", 403)
+        review_id = body.get("id")
+        if not review_id:
+            cur.close(); conn.close()
+            return err("Не указан id отзыва")
+        cur.execute(f"DELETE FROM {SCHEMA}.replies WHERE review_id = %s", (int(review_id),))
+        cur.execute(f"DELETE FROM {SCHEMA}.reviews WHERE id = %s", (int(review_id),))
+        conn.commit(); cur.close(); conn.close()
+        return ok({"message": "Отзыв удалён"})
 
     # POST ?action=reply — ответить от имени компании
     if method == "POST" and action == "reply":
