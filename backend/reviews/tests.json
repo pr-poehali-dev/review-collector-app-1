@@ -1,0 +1,27 @@
+{
+  "tests": [
+    {
+      "name": "GET approved reviews",
+      "method": "GET",
+      "path": "/",
+      "expectedStatus": 200,
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "POST create review",
+      "method": "POST",
+      "path": "/",
+      "body": {"author": "Тест Тестов", "rating": 5, "text": "Отличный сервис!", "source": "Сайт"},
+      "expectedStatus": 201,
+      "expectedBody": {"message": "Отзыв отправлен на модерацию"},
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "GET admin without token via query param",
+      "method": "GET",
+      "path": "/?action=admin",
+      "expectedStatus": 403,
+      "bodyMatcher": "partial"
+    }
+  ]
+}
