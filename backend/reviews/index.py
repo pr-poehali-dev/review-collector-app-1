@@ -1,6 +1,7 @@
 """
 Управление отзывами: получение, создание, модерация и ответы компании.
-Роутинг через query-параметр action: admin | moderate | reply
+Роутинг через query-параметр action: admin | moderate | reply | check
+Один отзыв на пользователя — контроль через fingerprint браузера.
 """
 import json
 import os
@@ -42,13 +43,24 @@ def handler(event: dict, context) -> dict:
     conn = get_conn()
     cur = conn.cursor()
 
+    # GET ?action=check&fp=... — проверить, оставлял ли пользователь отзыв
+    if method == "GET" and action == "check":
+        fp = params.get("fp", "").strip()
+        if not fp:
+            cur.close(); conn.close()
+            return ok({"has_review": False})
+        cur.execute(f"SELECT id FROM {SCHEMA}.reviews WHERE fingerprint = %s LIMIT 1", (fp,))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        return ok({"has_review": bool(row)})
+
     # GET ?action=admin — все отзывы для панели модерации
     if method == "GET" and action == "admin":
         if not is_admin(headers):
             cur.close(); conn.close()
             return err("Нет доступа", 403)
         cur.execute(f"""
-            SELECT r.id, r.author, r.rating, r.text, r.source, r.status, r.created_at,
+            SELECT r.id, r.author, r.rating, r.text, r.status, r.created_at,
                    rp.id AS reply_id, rp.text AS reply_text, rp.created_at AS reply_at
             FROM {SCHEMA}.reviews r
             LEFT JOIN {SCHEMA}.replies rp ON rp.review_id = r.id
@@ -61,27 +73,22 @@ def handler(event: dict, context) -> dict:
             if rid not in reviews:
                 reviews[rid] = {
                     "id": rid, "author": row[1], "rating": row[2],
-                    "text": row[3], "source": row[4], "status": row[5], "date": row[6],
+                    "text": row[3], "status": row[4], "date": row[5],
                     "reply": None
                 }
-            if row[7]:
-                reviews[rid]["reply"] = {"id": row[7], "text": row[8], "created_at": row[9]}
+            if row[6]:
+                reviews[rid]["reply"] = {"id": row[6], "text": row[7], "created_at": row[8]}
         cur.close(); conn.close()
         return ok(list(reviews.values()))
 
-    # GET / — публичный список одобренных с фильтрами
+    # GET / — публичный список одобренных с фильтром по оценке
     if method == "GET":
-        source = params.get("source", "")
         rating = params.get("rating", "")
-
         where = ["r.status = 'approved'"]
-        if source:
-            where.append(f"r.source = '{source.replace(chr(39), chr(39)*2)}'")
         if rating and rating.isdigit():
             where.append(f"r.rating = {int(rating)}")
-
         cur.execute(f"""
-            SELECT r.id, r.author, r.rating, r.text, r.source, r.created_at,
+            SELECT r.id, r.author, r.rating, r.text, r.created_at,
                    rp.id AS reply_id, rp.text AS reply_text, rp.created_at AS reply_at
             FROM {SCHEMA}.reviews r
             LEFT JOIN {SCHEMA}.replies rp ON rp.review_id = r.id
@@ -95,11 +102,11 @@ def handler(event: dict, context) -> dict:
             if rid not in reviews:
                 reviews[rid] = {
                     "id": rid, "author": row[1], "rating": row[2],
-                    "text": row[3], "source": row[4], "date": row[5],
+                    "text": row[3], "date": row[4],
                     "reply": None
                 }
-            if row[6]:
-                reviews[rid]["reply"] = {"id": row[6], "text": row[7], "created_at": row[8]}
+            if row[5]:
+                reviews[rid]["reply"] = {"id": row[5], "text": row[6], "created_at": row[7]}
         cur.close(); conn.close()
         return ok(list(reviews.values()))
 
@@ -108,15 +115,23 @@ def handler(event: dict, context) -> dict:
         author = (body.get("author") or "").strip()
         text = (body.get("text") or "").strip()
         rating = body.get("rating")
-        source = (body.get("source") or "Сайт").strip()
+        fingerprint = (body.get("fingerprint") or "").strip()
 
         if not author or not text or not rating or not (1 <= int(rating) <= 5):
             cur.close(); conn.close()
             return err("Заполните все поля корректно")
 
+        # Проверка: один отзыв на пользователя
+        if fingerprint:
+            cur.execute(f"SELECT id FROM {SCHEMA}.reviews WHERE fingerprint = %s LIMIT 1", (fingerprint,))
+            if cur.fetchone():
+                cur.close(); conn.close()
+                return err("Вы уже оставляли отзыв ранее", 409)
+
+        fp_value = fingerprint if fingerprint else None
         cur.execute(
-            f"INSERT INTO {SCHEMA}.reviews (author, rating, text, source) VALUES (%s, %s, %s, %s) RETURNING id",
-            (author, int(rating), text, source)
+            f"INSERT INTO {SCHEMA}.reviews (author, rating, text, source, fingerprint) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (author, int(rating), text, "Сайт", fp_value)
         )
         new_id = cur.fetchone()[0]
         conn.commit(); cur.close(); conn.close()

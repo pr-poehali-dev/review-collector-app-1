@@ -11,16 +11,24 @@
       "name": "POST create review",
       "method": "POST",
       "path": "/",
-      "body": {"author": "Тест Тестов", "rating": 5, "text": "Отличный сервис!", "source": "Сайт"},
+      "body": {"author": "Тест Тестов", "text": "Хороший сервис", "rating": 5, "fingerprint": "test-fp-unique-12345"},
       "expectedStatus": 201,
       "expectedBody": {"message": "Отзыв отправлен на модерацию"},
       "bodyMatcher": "partial"
     },
     {
-      "name": "GET admin without token via query param",
+      "name": "GET admin without token - forbidden",
       "method": "GET",
       "path": "/?action=admin",
       "expectedStatus": 403,
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "GET check fingerprint",
+      "method": "GET",
+      "path": "/?action=check&fp=nonexistent-fp-xyz",
+      "expectedStatus": 200,
+      "expectedBody": {"has_review": false},
       "bodyMatcher": "partial"
     }
   ]
